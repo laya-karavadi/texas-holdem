@@ -1,0 +1,509 @@
+
+import random
+from collections import Counter
+
+class PokerAlgorithm:
+    def __init__(self):
+        self.hand_rankings = {
+            "Royal Flush": 10,
+            "Straight Flush": 9,
+            "Four of a Kind": 8,
+            "Full House": 7,
+            "Flush": 6,
+            "Straight": 5,
+            "Three of a Kind": 4,
+            "Two Pair": 3,
+            "Pair": 2,
+            "High Card": 1
+        }
+        # Track opponents' betting patterns
+        self.opponent_patterns = {
+            'preflop': [],
+            'flop': [],
+            'turn': [],
+            'river': []
+        }
+        # Initialize aggression factor (will be updated based on opponent behavior)
+        self.aggression = 0.5
+    
+    def evaluate_hand(self, hole_cards, community_cards):
+        all_cards = hole_cards + community_cards
+        
+        # Check for flush
+        suits = [card[1] for card in all_cards]
+        suit_counts = Counter(suits)
+        flush_suit = None
+        for suit, count in suit_counts.items():
+            if count >= 5:
+                flush_suit = suit
+                break
+        
+        # Convert card values to numerical for easier processing
+        value_map = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
+        cards_numerical = [(value_map[card[0]], card[1]) for card in all_cards]
+        
+        # Get numerical values
+        values = [card[0] for card in cards_numerical]
+        value_counts = Counter(values)
+        
+        # Check for straight
+        unique_values = sorted(set(values))
+        straight = False
+        straight_high = None
+        
+        # Handle Ace as 1 for A-5 straight
+        if 14 in unique_values:
+            straight_values = sorted(set(values + [1]))
+        else:
+            straight_values = unique_values
+            
+        for i in range(len(straight_values) - 4):
+            if straight_values[i:i+5] == list(range(straight_values[i], straight_values[i] + 5)):
+                straight = True
+                straight_high = straight_values[i + 4]
+        
+        # Check for straight flush
+        straight_flush = False
+        if straight and flush_suit:
+            flush_cards = [card for card in cards_numerical if card[1] == flush_suit]
+            flush_values = [card[0] for card in flush_cards]
+            
+            # Check for A-5 straight flush
+            if 14 in flush_values:
+                flush_values = sorted(set(flush_values + [1]))
+                
+            for i in range(len(flush_values) - 4):
+                if len(set(flush_values[i:i+5])) == 5 and flush_values[i:i+5] == list(range(flush_values[i], flush_values[i] + 5)):
+                    straight_flush = True
+                    straight_high = flush_values[i + 4]
+        
+        # Royal flush check
+        royal_flush = straight_flush and straight_high == 14
+        
+        # Check for four of a kind, full house, etc.
+        four_of_a_kind = any(count == 4 for count in value_counts.values())
+        three_of_a_kind = any(count == 3 for count in value_counts.values())
+        pairs = sum(1 for count in value_counts.values() if count == 2)
+        
+        full_house = three_of_a_kind and pairs > 0
+        
+        # Determine the hand
+        if royal_flush:
+            return "Royal Flush"
+        elif straight_flush:
+            return "Straight Flush"
+        elif four_of_a_kind:
+            return "Four of a Kind"
+        elif full_house:
+            return "Full House"
+        elif flush_suit:
+            return "Flush"
+        elif straight:
+            return "Straight"
+        elif three_of_a_kind:
+            return "Three of a Kind"
+        elif pairs >= 2:
+            return "Two Pair"
+        elif pairs == 1:
+            return "Pair"
+        else:
+            return "High Card"
+    
+    def calculate_hand_strength(self, hole_cards, community_cards):
+        hand_type = self.evaluate_hand(hole_cards, community_cards)
+        base_strength = self.hand_rankings[hand_type] / 10.0
+        
+        # Adjust strength based on hole cards
+        value_map = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14}
+        hole_values = [value_map[card[0]] for card in hole_cards]
+        
+        # Premium starting hands get a boost
+        if set(hole_values) == {13, 14} or set(hole_values) == {14, 14}:  # A-K or A-A
+            base_strength += 0.15
+        elif 14 in hole_values or (hole_values[0] == hole_values[1] and hole_values[0] >= 10):  # Any A or pair of 10+
+            base_strength += 0.1
+        
+        # Adjust for community cards
+        if community_cards:
+            # Potential for improvement with more community cards
+            remaining_cards = 5 - len(community_cards)
+            if remaining_cards > 0:
+                base_strength *= (1 + 0.05 * remaining_cards)
+        
+        return min(max(base_strength, 0.05), 0.95)  # Keep between 0.05 and 0.95
+    
+    def calculate_pot_odds(self, game_state):
+        current_bet = game_state['current_bet']
+        pot = game_state['pot']
+        
+        if current_bet == 0:
+            return 1.0  # No bet to call
+        
+        return pot / (pot + current_bet)
+    
+    def update_opponent_model(self, phase, action, amount=0):
+        self.opponent_patterns[phase].append((action, amount))
+        
+        # Update aggression based on recent actions
+        if len(self.opponent_patterns[phase]) > 3:
+            recent_actions = [a[0] for a in self.opponent_patterns[phase][-3:]]
+            if 'raise' in recent_actions or 'bet' in recent_actions:
+                # Opponent is aggressive, be more cautious
+                self.aggression = max(0.3, self.aggression - 0.1)
+            elif 'fold' in recent_actions:
+                # Opponent is cautious, be more aggressive
+                self.aggression = min(0.8, self.aggression + 0.1)
+    
+    def make_decision(self, game_state):
+        hole_cards = game_state['hole_cards']
+        community_cards = game_state['community_cards']
+        current_bet = game_state['current_bet']
+        chips = game_state['chips']
+        pot = game_state['pot']
+        phase = game_state['phase']
+        
+        # Ensure pot is at least 1 to avoid division by zero
+        pot = max(pot, 1)
+        
+        # Calculate hand strength (0-1)
+        hand_strength = self.calculate_hand_strength(hole_cards, community_cards)
+        
+        # Calculate pot odds
+        pot_odds = self.calculate_pot_odds(game_state)
+        
+        # Print debug info about the decision
+        print(f"Hand strength: {hand_strength:.2f}")
+        print(f"Phase: {phase}")
+        print(f"Pot: {pot}, Current bet: {current_bet}")
+        
+        # Basic decision making logic
+        if current_bet == 0:  # We can bet or check
+            if hand_strength > 0.7:  # Strong hand
+                bet_amount = int(pot * 0.75 * self.aggression)
+                min_bet = 50 if chips >= 50 else chips
+                return 'bet', max(min(bet_amount, chips), min_bet)  # Bet between min_bet and available chips
+            elif hand_strength > 0.4:  # Medium hand
+                if random.random() < hand_strength * self.aggression:  # Sometimes bet with medium hands
+                    bet_amount = int(pot * 0.4 * self.aggression)
+                    min_bet = 50 if chips >= 50 else chips
+                    return 'bet', max(min(bet_amount, chips), min_bet)
+                else:
+                    return 'check', 0
+            else:  # Weak hand
+                if random.random() < 0.2 * self.aggression:  # Bluff occasionally
+                    bet_amount = int(pot * 0.3)
+                    min_bet = 50 if chips >= 50 else chips
+                    return 'bet', max(min(bet_amount, chips), min_bet)
+                else:
+                    return 'check', 0
+        else:  # We need to call, raise, or fold
+            if hand_strength > pot_odds + 0.1:  # Better than pot odds with margin
+                if hand_strength > 0.7:  # Strong hand
+                    raise_amount = min(current_bet * 2, chips)
+                    return 'raise', raise_amount
+                else:  # Medium hand
+                    return 'call', current_bet
+            elif hand_strength > pot_odds - 0.1:  # Close to pot odds
+                return 'call', current_bet
+            else:  # Bad hand
+                if random.random() < 0.1 * self.aggression:  # Occasional bluff
+                    raise_amount = min(current_bet * 2, chips)
+                    return 'raise', raise_amount
+                else:
+                    return 'fold', 0
+
+
+def play_game():
+    
+    # Initialize game
+    algorithm = PokerAlgorithm()
+    
+    # Ask for starting chips
+    while True:
+        try:
+            starting_chips = int(input("Starting chips: "))
+            if starting_chips > 0:
+                chips = starting_chips
+                opponent_chips = starting_chips
+                break
+            else:
+                print("Please enter a positive number")
+        except ValueError:
+            print("Please enter a valid number")
+    
+    pot = 0
+    hole_cards = []
+    community_cards = []
+    
+    # Get hole cards
+    while len(hole_cards) < 2:
+        card_input = input(f"Enter hole card {len(hole_cards)+1} (e.g., Ah Ks): ").strip().upper()
+        if len(card_input) >= 2:
+            value = card_input[:-1] if card_input[:-1] != '1' else '10'
+            suit = card_input[-1]
+            if value in ['2','3','4','5','6','7','8','9','10','J','Q','K','A'] and suit in ['H','D','C','S']:
+                hole_cards.append((value, suit))
+    
+    # Game phases
+    print("\nWho goes first? (0 for algorithm, 1 for opponent)")
+    while True:
+        try:
+            first_actor = int(input("Enter choice (0/1): "))
+            if first_actor in [0, 1]:
+                to_act_first = (first_actor == 0)
+                break
+            else:
+                print("Please enter 0 or 1")
+        except ValueError:
+            print("Please enter a valid number (0 or 1)")
+    
+    for phase in ['preflop', 'flop', 'turn', 'river']:
+        print(f"\n--- {phase.upper()} ---")
+        print(f"Your cards: {' '.join([c[0]+c[1] for c in hole_cards])}")
+        if community_cards:
+            print(f"Community cards: {' '.join([c[0]+c[1] for c in community_cards])}")
+        
+        # Get community cards for this phase
+        if phase == 'flop':
+            while len(community_cards) < 3:
+                card_input = input(f"Enter flop card {len(community_cards)+1}: ").strip().upper()
+                if len(card_input) >= 2:
+                    value = card_input[:-1] if card_input[:-1] != '1' else '10'
+                    suit = card_input[-1]
+                    if value in ['2','3','4','5','6','7','8','9','10','J','Q','K','A'] and suit in ['H','D','C','S']:
+                        community_cards.append((value, suit))
+        elif phase in ['turn', 'river']:
+            card_input = input(f"Enter {phase} card: ").strip().upper()
+            if len(card_input) >= 2:
+                value = card_input[:-1] if card_input[:-1] != '1' else '10'
+                suit = card_input[-1]
+                if value in ['2','3','4','5','6','7','8','9','10','J','Q','K','A'] and suit in ['H','D','C','S']:
+                    community_cards.append((value, suit))
+        
+        # Betting round
+        current_bet = 0
+        player_bet = 0
+        opponent_bet = 0
+        last_raiser = None
+        action = None
+        opp_action = None
+        
+        print(f"{'You are' if to_act_first else 'Opponent is'} first to act")
+        
+        while True:
+            game_state = {
+                'hole_cards': hole_cards,
+                'community_cards': community_cards,
+                'current_bet': current_bet,
+                'chips': chips,
+                'pot': pot,
+                'opponent_chips': opponent_chips,
+                'to_act_first': to_act_first,
+                'phase': phase
+            }
+            
+            if to_act_first:
+                # Your algorithm's turn
+                action, amount = algorithm.make_decision(game_state)
+                
+                if action == 'check':
+                    print(f"Your action: CHECK")
+                    if current_bet > 0:
+                        print("Cannot check when there's a bet. Converting to call.")
+                        action = 'call'
+                        amount = current_bet
+                
+                if action == 'bet':
+                    if current_bet > 0:
+                        print("Cannot bet when there's already a bet. Converting to raise.")
+                        action = 'raise'
+                    elif amount <= 0:
+                        print("Must be greater than 0")
+                        break
+                    if amount > chips:
+                        amount = chips  # All-in
+                    print(f"Your action: BET {amount}")
+                    chips -= amount
+                    player_bet += amount
+                    current_bet = amount
+                    last_raiser = 'player'
+                elif action == 'raise':
+                    if current_bet == 0:
+                        print("Cannot raise when there's no bet. Converting to bet.")
+                        action = 'bet'
+                    else:
+                        amount = current_bet + amount
+                        if amount > chips + player_bet:
+                            amount = chips + player_bet  # All-in
+                        print(f"Your action: RAISE to {amount}")
+                        chips -= (amount - player_bet)
+                        player_bet = amount
+                        current_bet = amount - opponent_bet
+                        last_raiser = 'player'
+                elif action == 'call':
+                    call_amount = min(current_bet, chips)
+                    print(f"Your action: CALL {call_amount}")
+                    chips -= call_amount
+                    player_bet += call_amount
+                    if call_amount < current_bet:
+                        print("All-in!")
+                elif action == 'fold':
+                    print("Your action: FOLD")
+                    opponent_chips += pot + player_bet + opponent_bet
+                    print(f"You folded! Opponent wins {pot + player_bet + opponent_bet} chips")
+                    print(f"\nChips - You: {chips} | Opponent: {opponent_chips}")
+                    if phase != 'river':
+                        return  # End game if fold before river
+                
+                to_act_first = False
+            else:
+                # Opponent's turn
+                while True:
+                    opp_input = input("Opponent action (check/call/bet/raise/fold): ").lower()
+                    
+                    # Fix: Better input validation based on current betting state
+                    if opp_input.startswith('check') and current_bet == 0:
+                        opp_action = 'check'
+                        opp_amount = 0
+                        break
+                    elif opp_input.startswith('call'):
+                        if current_bet == 0:
+                            print("Cannot call when there's no bet. Use 'check' instead.")
+                        else:
+                            opp_action = 'call'
+                            opp_amount = current_bet
+                            break
+                    elif opp_input.startswith('bet'):
+                        if current_bet > 0:
+                            print("Cannot bet when there's already a bet. Use 'raise' instead.")
+                        else:
+                            try:
+                                parts = opp_input.split()
+                                if len(parts) > 1:
+                                    opp_amount = int(parts[1])
+                                    if opp_amount <= opponent_chips:
+                                        opp_action = 'bet'
+                                        break
+                                    print(f"Invalid bet amount. Maximum: {opponent_chips}")
+                                else:
+                                    print("Please specify bet amount (e.g., 'bet 100')")
+                            except ValueError:
+                                print("Please enter a valid bet amount (e.g., 'bet 100')")
+                    elif opp_input.startswith('raise'):
+                        if current_bet == 0:
+                            print("Cannot raise when there's no bet. Use 'bet' instead.")
+                        else:
+                            try:
+                                parts = opp_input.split()
+                                if len(parts) > 1:
+                                    opp_amount = int(parts[1])
+                                    if opp_amount > current_bet and opp_amount <= opponent_chips + opponent_bet:
+                                        opp_action = 'raise'
+                                        break
+                                    print(f"Invalid raise amount. Minimum: {current_bet+1}, Maximum: {opponent_chips + opponent_bet}")
+                                else:
+                                    print("Please specify raise amount (e.g., 'raise 200')")
+                            except ValueError:
+                                print("Please enter a valid raise amount (e.g., 'raise 200')")
+                    elif opp_input == 'fold':
+                        opp_action = 'fold'
+                        opp_amount = 0
+                        break
+                    else:
+                        print("Invalid action. Please use check, call, bet, raise, or fold correctly")
+                
+                # Update opponent model
+                algorithm.update_opponent_model(phase, opp_action, opp_amount)
+                
+                if opp_action == 'bet':
+                    print(f"Opponent bets {opp_amount}")
+                    opponent_chips -= opp_amount
+                    opponent_bet += opp_amount
+                    current_bet = opp_amount
+                    last_raiser = 'opponent'
+                    to_act_first = True
+                elif opp_action == 'raise':
+                    raise_to = opp_amount
+                    raise_by = raise_to - opponent_bet
+                    print(f"Opponent raises to {raise_to} (adding {raise_by})")
+                    opponent_chips -= raise_by
+                    opponent_bet = raise_to
+                    current_bet = opponent_bet - player_bet
+                    last_raiser = 'opponent'
+                    to_act_first = True
+                elif opp_action == 'call':
+                    call_amount = min(current_bet, opponent_chips)
+                    print(f"Opponent calls {call_amount}")
+                    opponent_chips -= call_amount
+                    opponent_bet += call_amount
+                    if call_amount < current_bet:
+                        print("Opponent is all-in!")
+                elif opp_action == 'fold':
+                    print("Opponent folds! You win!")
+                    chips += pot + player_bet + opponent_bet
+                    print(f"You won {pot + player_bet + opponent_bet} chips")
+                    print(f"\nChips - You: {chips} | Opponent: {opponent_chips}")
+                    if phase != 'river':
+                        return  # End game if fold before river
+                else:  # check
+                    print("Opponent checks")
+                    if current_bet == 0:
+                        to_act_first = True
+            
+            # Check if betting round should end
+            if action and opp_action:  # Ensure both players have acted
+                if ((action in ['check', 'call'] and opp_action in ['check', 'call']) or
+                    (last_raiser == 'player' and opp_action == 'call') or
+                    (last_raiser == 'opponent' and action == 'call') or
+                    action == 'fold' or opp_action == 'fold'):
+                    # Add bets to pot and reset for next round
+                    pot += player_bet + opponent_bet
+                    player_bet = 0
+                    opponent_bet = 0
+                    break
+        
+        # Skip to showdown if someone folded
+        if action == 'fold' or opp_action == 'fold':
+            break
+            
+        # Alternate who acts first for next round
+        to_act_first = not to_act_first
+    
+    # Showdown if we reached the river and no one folded
+    if len(community_cards) == 5 and action != 'fold' and opp_action != 'fold':
+        print("\n--- SHOWDOWN ---")
+        
+        # Get opponent hole cards
+        opponent_hole = []
+        while len(opponent_hole) < 2:
+            card_input = input(f"Enter opponent's hole card {len(opponent_hole)+1}: ").strip().upper()
+            if len(card_input) >= 2:
+                value = card_input[:-1] if card_input[:-1] != '1' else '10'
+                suit = card_input[-1]
+                if value in ['2','3','4','5','6','7','8','9','10','J','Q','K','A'] and suit in ['H','D','C','S']:
+                    opponent_hole.append((value, suit))
+        
+        player_hand = algorithm.evaluate_hand(hole_cards, community_cards)
+        opponent_hand = algorithm.evaluate_hand(opponent_hole, community_cards)
+        
+        print(f"Your cards: {' '.join([c[0]+c[1] for c in hole_cards])}")
+        print(f"Community cards: {' '.join([c[0]+c[1] for c in community_cards])}")
+        print(f"Opponent cards: {' '.join([c[0]+c[1] for c in opponent_hole])}")
+        print(f"\nYour hand: {player_hand}")
+        print(f"Opponent hand: {opponent_hand}")
+        
+        if algorithm.hand_rankings[player_hand] > algorithm.hand_rankings[opponent_hand]:
+            print("You win the pot!")
+            chips += pot
+        elif algorithm.hand_rankings[player_hand] < algorithm.hand_rankings[opponent_hand]:
+            print("Opponent wins the pot!")
+            opponent_chips += pot
+        else:
+            print("Split pot!")
+            chips += pot // 2
+            opponent_chips += pot // 2
+    
+    print(f"\nFinal chips - You: {chips} | Opponent: {opponent_chips}")
+
+if __name__ == "__main__":
+    play_game()
